@@ -273,7 +273,7 @@ export default {
     if (/^\/wp-(includes|content)\//i.test(path) && (request.method === "GET" || request.method === "HEAD")) {
       const a = await env.ASSETS.fetch(request);
       const ct = (a.headers.get("content-type") || "").toLowerCase();
-      if (a.status === 200 && !ct.startsWith("text/html")) return a;
+      if (a.status === 200 && !ct.startsWith("text/html")) return cacheable(a);
       if (!/^\/wp-includes\//i.test(path)) return a;
     }
 
@@ -310,6 +310,29 @@ export default {
     return env.ASSETS.fetch(request);
   },
 };
+
+// Pages serves its own assets with "cache-control: public, max-age=0,
+// must-revalidate", and Cloudflare honours must-revalidate by going back to
+// the origin on EVERY request - cf-cache-status REVALIDATED - so this Worker
+// ran once per asset per page view. Measured 2026-11-08: 266,762 Function
+// invocations/day on this project, 267% of the free plan's whole 100,000/day
+// ACCOUNT cap, for only ~3,400 page views, and the account was answering
+// error 1027 / HTTP 429 for ~18 hours of every day because of it.
+//
+// These are WordPress plugin, theme and core files. The markup versions them
+// with ?ver=, which is part of the cache key, so a changed file arrives under
+// a new URL and a long TTL cannot serve a stale one.
+//
+// The A/B for this is already in production on this same project: the uploads
+// branch above sets max-age=86400 and those assets answer cf-cache-status HIT
+// with an age of 75,636s, while every plugin/theme file beside them answers
+// REVALIDATED. Same zone, same edge, same deployment - the only difference is
+// this header.
+function cacheable(res) {
+  const h = new Headers(res.headers);
+  h.set("cache-control", "public, max-age=86400");
+  return new Response(res.body, { status: res.status, statusText: res.statusText, headers: h });
+}
 
 const MEDIA_TYPES = { jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", gif: "image/gif",
   webp: "image/webp", svg: "image/svg+xml", mp4: "video/mp4", webm: "video/webm", pdf: "application/pdf",
